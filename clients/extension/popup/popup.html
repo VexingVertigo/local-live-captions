@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 260px;
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #121212;
+      color: #e0e0e0;
+    }
+    h2 {
+      font-size: 15px;
+      margin: 0 0 10px 0;
+      color: #3ea6ff;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .status-card {
+      background: #1e1e1e;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #4caf50;
+      margin-right: 6px;
+    }
+    p {
+      font-size: 12px;
+      color: #aaa;
+      margin: 0 0 8px 0;
+      line-height: 1.4;
+    }
+    .hint {
+      font-size: 11px;
+      color: #777;
+    }
+  </style>
+</head>
+<body>
+  <h2>Local Live Captions</h2>
+  <div class="status-card">
+    <div><span class="status-dot"></span><strong>Target:</strong> ws://127.0.0.1:8765</div>
+    <div style="margin-top: 4px; color: #888;">Backend: Local NVIDIA RTX Engine</div>
+  </div>
+  <p>To use captions, ensure <code>server.py</code> is running on your machine, then click the <strong>AI CC</strong> button on any YouTube video.</p>
+  <div class="hint">Supports sub-second live streaming transcription on RTX hardware.</div>
+</body>
+</html>
