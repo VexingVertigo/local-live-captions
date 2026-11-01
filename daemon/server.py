@@ -1,84 +1,71 @@
 import asyncio
 import json
 import websockets
-from hardware import verify_gpu_support
 from engine import StreamingASREngine
 from loopback import LoopbackCapture
 
-# Connected WebSocket clients (YouTube extension or Desktop HUD)
-connected_clients = set()
-last_broadcast_text = ""
+CONNECTED_CLIENTS = set()
+loop = None
 
 async def broadcast_transcript(text: str):
-    global last_broadcast_text
-    if not text or text == last_broadcast_text:
+    if not CONNECTED_CLIENTS or not text.strip():
         return
-    last_broadcast_text = text
+    print(f"[ASR] -> \"{text}\"")
     payload = json.dumps({"type": "transcript", "text": text})
-    
-    if connected_clients:
-        # Broadcast to all open tabs / overlays simultaneously
-        await asyncio.gather(
-            *[client.send(payload) for client in connected_clients.copy()],
-            return_exceptions=True
-        )
+    disconnected = set()
+    for ws in CONNECTED_CLIENTS:
+        try:
+            await ws.send(payload)
+        except Exception:
+            disconnected.add(ws)
+    CONNECTED_CLIENTS.difference_update(disconnected)
 
 async def client_handler(websocket):
-    connected_clients.add(websocket)
-    print(f"[Server] Client connected. Total active: {len(connected_clients)}")
+    CONNECTED_CLIENTS.add(websocket)
+    print(f"[Server] Client connected. Total active: {len(CONNECTED_CLIENTS)}")
     try:
-        # Send instant initial state
-        if last_broadcast_text:
-            await websocket.send(json.dumps({"type": "transcript", "text": last_broadcast_text}))
-
+        await websocket.send(json.dumps({
+            "type": "status",
+            "status": "connected",
+            "message": "AI Engine ready. Transcribing desktop audio..."
+        }))
         async for message in websocket:
-            # Handle client control pings
-            try:
-                msg = json.loads(message)
-                if msg.get("action") == "ping":
-                    await websocket.send(json.dumps({"type": "pong"}))
-            except Exception:
-                pass
-    except websockets.exceptions.ConnectionClosed:
+            pass  # Keepalive listener
+    except Exception:
         pass
     finally:
-        connected_clients.remove(websocket)
-        print(f"[Server] Client disconnected. Total active: {len(connected_clients)}")
+        CONNECTED_CLIENTS.discard(websocket)
+        print(f"[Server] Client disconnected. Total active: {len(CONNECTED_CLIENTS)}")
 
 async def main():
-    print("=" * 60)
-    print(" Local Live Captions Daemon — NVIDIA Streaming ASR Hub ")
-    print("=" * 60)
-
-    # 1. Hardware Pre-flight
-    compatible, hw_info = verify_gpu_support()
-    if not compatible:
-        print(f"\n[ERROR] Hardware check failed:\n -> {hw_info.get('error')}")
-        print("This application requires an NVIDIA RTX GPU with at least 3.5 GB VRAM.\n")
-        return
-
-    print(f"[OK] GPU Detected: {hw_info['device_name']} ({hw_info['vram_free_gb']} GB free VRAM)")
-
-    # 2. Initialize Streaming Engine
+    global loop
     loop = asyncio.get_running_loop()
+
+    # 1. Initialize NVIDIA Streaming ASR Engine
     engine = StreamingASREngine()
 
+    # 2. Audio Processing Callback
     def on_audio_chunk(audio_data):
-        # Transcribe incoming audio slice
         transcript = engine.process_audio_chunk(audio_data)
         if transcript:
-            # Push transcript into the async event loop
             asyncio.run_coroutine_threadsafe(broadcast_transcript(transcript), loop)
 
-    # 3. Start Desktop Audio Loopback
+    # 3. Start Loopback Capture
     loopback = LoopbackCapture()
     loopback.start(on_audio_chunk)
 
-    # 4. Start WebSocket Server
+    # 4. Start WebSocket Server with Keepalive
     print("[Server] Starting WebSocket server on ws://127.0.0.1:8765")
-    async with websockets.serve(client_handler, "127.0.0.1", 8765):
+    async with websockets.serve(
+        client_handler,
+        "0.0.0.0",
+        8765,
+        origins=None,
+        ping_interval=10,
+        ping_timeout=20
+    ):
         try:
-            await asyncio.Future()  # Run forever
+            await asyncio.Future()
         finally:
             loopback.stop()
 

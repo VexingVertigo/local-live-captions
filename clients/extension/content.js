@@ -1,78 +1,138 @@
-let ws = null;
-let captionBox = null;
+let captionWrapper = null;
+let textSpan = null;
 let isEnabled = false;
-let reconnectTimer = null;
+let clearTimer = null;
+let pauseTimer = null;
+
+let line1Text = "";
+let line2Text = "";
+let isNewSentence = true;
+
+const MAX_LINE_CHARS = 40;
 
 function createCaptionBox(player) {
-  if (document.getElementById("ai-cc-box")) return;
+  if (document.getElementById("ai-cc-wrapper")) return;
 
-  captionBox = document.createElement("div");
-  captionBox.id = "ai-cc-box";
-  captionBox.style.cssText = `
+  captionWrapper = document.createElement("div");
+  captionWrapper.id = "ai-cc-wrapper";
+  captionWrapper.style.cssText = `
     position: absolute;
-    bottom: 70px;
+    bottom: 75px;
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(10, 10, 10, 0.85);
-    color: #ffffff;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 20px;
-    font-weight: 600;
-    line-height: 1.4;
-    padding: 6px 16px;
-    border-radius: 6px;
-    z-index: 60;
-    pointer-events: none;
+    width: fit-content;
     max-width: 82%;
     text-align: center;
-    box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.6);
+    z-index: 60;
+    pointer-events: none;
     display: none;
-    transition: opacity 0.15s ease;
+    transition: opacity 0.2s ease;
   `;
-  player.appendChild(captionBox);
+
+  textSpan = document.createElement("span");
+  textSpan.id = "ai-cc-text";
+  textSpan.style.cssText = `
+    font-family: "YouTube Noto", Roboto, "Segoe UI", Arial, sans-serif;
+    font-size: 21px;
+    font-weight: 600;
+    line-height: 1.5;
+    color: #ffffff;
+    background: rgba(8, 8, 10, 0.85);
+    padding: 6px 14px;
+    border-radius: 4px;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    box-shadow: 0px 2px 8px rgba(0, 0, 0, 0.6);
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    white-space: pre-wrap;
+    display: inline-block;
+  `;
+
+  captionWrapper.appendChild(textSpan);
+  player.appendChild(captionWrapper);
 }
 
-function connectWebSocket() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-    return;
+function formatWord(word) {
+  if (isNewSentence) {
+    isNewSentence = false;
+    return word.charAt(0).toUpperCase() + word.slice(1);
+  }
+  return word;
+}
+
+function appendSpeech(incomingString) {
+  if (!captionWrapper || !isEnabled) return;
+
+  const words = incomingString.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return;
+
+  captionWrapper.style.display = "block";
+  textSpan.style.color = "#ffffff";
+
+  for (let rawWord of words) {
+    const word = formatWord(rawWord);
+
+    if ((line2Text + " " + word).trim().length > MAX_LINE_CHARS) {
+      line1Text = line2Text;
+      line2Text = word;
+    } else {
+      line2Text = line2Text ? `${line2Text} ${word}` : word;
+    }
   }
 
-  ws = new WebSocket("ws://127.0.0.1:8765");
+  // Display 2 lines if Line 1 has text, otherwise a single compact line
+  if (line1Text) {
+    textSpan.innerText = `${line1Text}\n${line2Text}`;
+  } else {
+    textSpan.innerText = line2Text;
+  }
 
-  ws.onopen = () => {
-    console.log("[AI CC] Connected to local desktop daemon.");
-    if (captionBox && isEnabled) {
-      captionBox.style.display = "block";
-      captionBox.innerText = "Listening for audio...";
+  // Commit sentence break after a natural pause
+  clearTimeout(pauseTimer);
+  pauseTimer = setTimeout(() => {
+    isNewSentence = true;
+    if (line2Text) {
+      line1Text = line2Text;
+      line2Text = "";
     }
-  };
+  }, 1800);
 
-  ws.onmessage = (event) => {
-    if (!isEnabled || !captionBox) return;
-    try {
-      const data = JSON.parse(event.data);
-      if (data.type === "transcript" && data.text) {
-        captionBox.innerText = data.text;
-      }
-    } catch {
-      captionBox.innerText = event.data;
-    }
-  };
-
-  ws.onclose = () => {
-    if (captionBox && isEnabled) {
-      captionBox.innerText = "[Local AI Daemon Offline - Launch server.py]";
-    }
-    if (isEnabled) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(connectWebSocket, 3000);
-    }
-  };
-
-  ws.onerror = () => {
-    if (ws) ws.close();
-  };
+  // Clear captions after 5 seconds of silence
+  clearTimeout(clearTimer);
+  clearTimer = setTimeout(() => {
+    line1Text = "";
+    line2Text = "";
+    isNewSentence = true;
+    if (captionWrapper) captionWrapper.style.display = "none";
+  }, 5000);
 }
+
+function showSystemStatus(message, isError = false) {
+  if (!captionWrapper || !isEnabled) return;
+  clearTimeout(clearTimer);
+  clearTimeout(pauseTimer);
+  line1Text = "";
+  line2Text = "";
+  isNewSentence = true;
+
+  captionWrapper.style.display = "block";
+  textSpan.style.color = isError ? "#ff6b6b" : "#ffca28";
+  textSpan.innerText = message;
+}
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!isEnabled) return;
+
+  if (msg.type === "transcript" && msg.text) {
+    appendSpeech(msg.text);
+  } else if (msg.type === "status") {
+    if (msg.status === "offline") {
+      showSystemStatus(`[Error] ${msg.message}`, true);
+    } else if (msg.status === "connecting" || msg.status === "connected") {
+      showSystemStatus(msg.message, false);
+    }
+  }
+});
 
 function injectToggleButton() {
   const rightControls = document.querySelector(".ytp-right-controls");
@@ -95,25 +155,27 @@ function injectToggleButton() {
     if (isEnabled) {
       btn.style.color = "#3ea6ff";
       btn.querySelector("span").style.borderColor = "#3ea6ff";
-      captionBox.style.display = "block";
-      captionBox.innerText = "Connecting to GPU engine...";
-      connectWebSocket();
+      showSystemStatus("Connecting to AI engine...", false);
+      chrome.runtime.sendMessage({ action: "get_status" }, (res) => {
+        if (res && res.status === "connected") {
+          showSystemStatus(res.message, false);
+        }
+      });
     } else {
       btn.style.color = "#ffffff";
       btn.querySelector("span").style.borderColor = "#bbb";
-      captionBox.style.display = "none";
-      if (ws) {
-        ws.close();
-        ws = null;
-      }
+      clearTimeout(clearTimer);
+      clearTimeout(pauseTimer);
+      line1Text = "";
+      line2Text = "";
+      isNewSentence = true;
+      captionWrapper.style.display = "none";
     }
   };
 
-  // Place immediately before the Settings gear icon
   rightControls.insertBefore(btn, rightControls.firstChild);
 }
 
-// Observe YouTube player DOM changes (SPA page swaps)
 const observer = new MutationObserver(() => injectToggleButton());
 observer.observe(document.body, { childList: true, subtree: true });
 injectToggleButton();
