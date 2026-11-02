@@ -12,7 +12,7 @@
     "<all_urls>"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:8765 ws://localhost:8765 http://127.0.0.1:8765 http://localhost:8765"
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws: http:;"
   },
   "browser_specific_settings": {
     "gecko": {

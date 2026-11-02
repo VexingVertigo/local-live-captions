@@ -8,45 +8,53 @@ function connectWebSocket() {
     return;
   }
 
-  try {
-    socket = new WebSocket("ws://127.0.0.1:8765");
+  chrome.storage.local.get({ serverHost: "127.0.0.1:8765" }, (items) => {
+    const host = items.serverHost || "127.0.0.1:8765";
 
-    socket.onopen = () => {
-      isConnected = true;
-      clearTimeout(reconnectTimer);
-      startKeepAlive();
-    };
+    if (socket) {
+      try { socket.close(); } catch (e) {}
+    }
 
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === "transcript") {
-          // Broadcast transcript and speaker tag to all active browser tabs
-          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs && tabs[0] && tabs[0].id) {
-              chrome.tabs.sendMessage(tabs[0].id, data).catch(() => {});
-            }
-          });
-        }
-      } catch (err) {}
-    };
+    try {
+      socket = new WebSocket(`ws://${host}`);
 
-    socket.onclose = () => {
+      socket.onopen = () => {
+        isConnected = true;
+        clearTimeout(reconnectTimer);
+        startKeepAlive();
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "transcript") {
+            // Broadcast transcript and speaker tag to all active browser tabs
+            chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+              if (tabs && tabs[0] && tabs[0].id) {
+                chrome.tabs.sendMessage(tabs[0].id, data).catch(() => {});
+              }
+            });
+          }
+        } catch (err) {}
+      };
+
+      socket.onclose = () => {
+        isConnected = false;
+        stopKeepAlive();
+        scheduleReconnect();
+      };
+
+      socket.onerror = () => {
+        isConnected = false;
+        stopKeepAlive();
+        try { socket.close(); } catch (e) {}
+      };
+    } catch (err) {
       isConnected = false;
       stopKeepAlive();
       scheduleReconnect();
-    };
-
-    socket.onerror = () => {
-      isConnected = false;
-      stopKeepAlive();
-      try { socket.close(); } catch (e) {}
-    };
-  } catch (err) {
-    isConnected = false;
-    stopKeepAlive();
-    scheduleReconnect();
-  }
+    }
+  });
 }
 
 // Resets Chromium service worker's 30s idle timer
@@ -85,6 +93,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "reconnect" || request.action === "ensure_connected") {
+    if (socket) {
+      try { socket.close(); } catch (e) {}
+      socket = null;
+    }
     connectWebSocket();
     sendResponse({ status: "connecting" });
     return true;
