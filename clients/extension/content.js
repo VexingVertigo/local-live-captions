@@ -8,69 +8,70 @@ let line1Text = "";
 let line2Text = "";
 let isNewSentence = true;
 
-const MAX_LINE_CHARS = 40;
+const MAX_LINE_CHARS = 42;
 
-function createCaptionBox(player) {
-  if (document.getElementById("ai-cc-wrapper")) return;
+function getActiveVideo() {
+  const videos = Array.from(document.querySelectorAll("video"));
+  return videos.find(v => !v.paused && v.currentTime > 0) || videos[0] || null;
+}
+
+function ensureCaptionElements() {
+  if (captionWrapper && document.body.contains(captionWrapper)) return;
 
   captionWrapper = document.createElement("div");
-  captionWrapper.id = "ai-cc-wrapper";
+  captionWrapper.id = "universal-ai-cc-root";
   captionWrapper.style.cssText = `
-    position: absolute;
-    bottom: 75px;
+    position: fixed;
+    bottom: 80px;
     left: 50%;
     transform: translateX(-50%);
     width: fit-content;
-    max-width: 82%;
+    max-width: 85vw;
     text-align: center;
-    z-index: 60;
+    z-index: 2147483647;
     pointer-events: none;
     display: none;
-    transition: opacity 0.2s ease;
+    transition: opacity 0.15s ease;
   `;
 
   textSpan = document.createElement("span");
-  textSpan.id = "ai-cc-text";
   textSpan.style.cssText = `
-    font-family: "YouTube Noto", Roboto, "Segoe UI", Arial, sans-serif;
-    font-size: 21px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 20px;
     font-weight: 600;
     line-height: 1.5;
     color: #ffffff;
-    background: rgba(8, 8, 10, 0.85);
+    background: rgba(10, 10, 14, 0.88);
     padding: 6px 14px;
     border-radius: 4px;
     box-decoration-break: clone;
     -webkit-box-decoration-break: clone;
-    box-shadow: 0px 2px 8px rgba(0, 0, 0, 0.6);
-    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.6);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.9);
     white-space: pre-wrap;
     display: inline-block;
   `;
 
   captionWrapper.appendChild(textSpan);
-  player.appendChild(captionWrapper);
+  document.body.appendChild(captionWrapper);
 }
 
-function formatWord(word) {
-  if (isNewSentence) {
-    isNewSentence = false;
-    return word.charAt(0).toUpperCase() + word.slice(1);
-  }
-  return word;
-}
-
-function appendSpeech(incomingString) {
+function appendSpeech(text) {
+  ensureCaptionElements();
   if (!captionWrapper || !isEnabled) return;
 
-  const words = incomingString.trim().split(/\s+/).filter(Boolean);
+  const words = text.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return;
 
   captionWrapper.style.display = "block";
   textSpan.style.color = "#ffffff";
 
   for (let rawWord of words) {
-    const word = formatWord(rawWord);
+    let word = rawWord;
+    if (isNewSentence) {
+      isNewSentence = false;
+      word = word.charAt(0).toUpperCase() + word.slice(1);
+    }
 
     if ((line2Text + " " + word).trim().length > MAX_LINE_CHARS) {
       line1Text = line2Text;
@@ -80,14 +81,8 @@ function appendSpeech(incomingString) {
     }
   }
 
-  // Display 2 lines if Line 1 has text, otherwise a single compact line
-  if (line1Text) {
-    textSpan.innerText = `${line1Text}\n${line2Text}`;
-  } else {
-    textSpan.innerText = line2Text;
-  }
+  textSpan.innerText = line1Text ? `${line1Text}\n${line2Text}` : line2Text;
 
-  // Commit sentence break after a natural pause
   clearTimeout(pauseTimer);
   pauseTimer = setTimeout(() => {
     isNewSentence = true;
@@ -97,7 +92,6 @@ function appendSpeech(incomingString) {
     }
   }, 1800);
 
-  // Clear captions after 5 seconds of silence
   clearTimeout(clearTimer);
   clearTimer = setTimeout(() => {
     line1Text = "";
@@ -107,75 +101,37 @@ function appendSpeech(incomingString) {
   }, 5000);
 }
 
-function showSystemStatus(message, isError = false) {
-  if (!captionWrapper || !isEnabled) return;
-  clearTimeout(clearTimer);
-  clearTimeout(pauseTimer);
-  line1Text = "";
-  line2Text = "";
-  isNewSentence = true;
+function toggleCaptions() {
+  isEnabled = !isEnabled;
+  ensureCaptionElements();
 
-  captionWrapper.style.display = "block";
-  textSpan.style.color = isError ? "#ff6b6b" : "#ffca28";
-  textSpan.innerText = message;
+  if (isEnabled) {
+    captionWrapper.style.display = "block";
+    textSpan.style.color = "#ffca28";
+    textSpan.innerText = "Local AI Captions: Listening...";
+    chrome.runtime.sendMessage({ action: "get_status" });
+  } else {
+    clearTimeout(clearTimer);
+    clearTimeout(pauseTimer);
+    line1Text = "";
+    line2Text = "";
+    isNewSentence = true;
+    captionWrapper.style.display = "none";
+  }
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (!isEnabled) return;
-
-  if (msg.type === "transcript" && msg.text) {
-    appendSpeech(msg.text);
-  } else if (msg.type === "status") {
-    if (msg.status === "offline") {
-      showSystemStatus(`[Error] ${msg.message}`, true);
-    } else if (msg.status === "connecting" || msg.status === "connected") {
-      showSystemStatus(msg.message, false);
-    }
+// Global Hotkey: Alt + C toggles live captions on any website
+window.addEventListener("keydown", (e) => {
+  if (e.altKey && (e.key === "c" || e.key === "C")) {
+    toggleCaptions();
   }
 });
 
-function injectToggleButton() {
-  const rightControls = document.querySelector(".ytp-right-controls");
-  const player = document.querySelector("#movie_player");
-
-  if (!rightControls || !player || document.getElementById("ai-cc-toggle-btn")) {
-    return;
+// Click extension icon from browser toolbar to toggle
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.action === "toggle_from_icon") {
+    toggleCaptions();
+  } else if (isEnabled && msg.type === "transcript" && msg.text) {
+    appendSpeech(msg.text);
   }
-
-  createCaptionBox(player);
-
-  const btn = document.createElement("button");
-  btn.id = "ai-cc-toggle-btn";
-  btn.className = "ytp-button";
-  btn.title = "Toggle Local AI Captions";
-  btn.innerHTML = `<span style="font-weight:700; font-size:12px; border:1.5px solid #bbb; border-radius:3px; padding:2px 5px;">AI CC</span>`;
-
-  btn.onclick = () => {
-    isEnabled = !isEnabled;
-    if (isEnabled) {
-      btn.style.color = "#3ea6ff";
-      btn.querySelector("span").style.borderColor = "#3ea6ff";
-      showSystemStatus("Connecting to AI engine...", false);
-      chrome.runtime.sendMessage({ action: "get_status" }, (res) => {
-        if (res && res.status === "connected") {
-          showSystemStatus(res.message, false);
-        }
-      });
-    } else {
-      btn.style.color = "#ffffff";
-      btn.querySelector("span").style.borderColor = "#bbb";
-      clearTimeout(clearTimer);
-      clearTimeout(pauseTimer);
-      line1Text = "";
-      line2Text = "";
-      isNewSentence = true;
-      captionWrapper.style.display = "none";
-    }
-  };
-
-  rightControls.insertBefore(btn, rightControls.firstChild);
-}
-
-const observer = new MutationObserver(() => injectToggleButton());
-observer.observe(document.body, { childList: true, subtree: true });
-injectToggleButton();
+});
