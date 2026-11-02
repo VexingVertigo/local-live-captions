@@ -1,137 +1,228 @@
-let captionWrapper = null;
-let textSpan = null;
-let isEnabled = false;
+let targetVideo = null;
+let captionBox = null;
+let line1El = null;
+let line2El = null;
+let span1El = null;
+let span2El = null;
+let resizeObserver = null;
 let clearTimer = null;
-let pauseTimer = null;
 
-let line1Text = "";
-let line2Text = "";
-let isNewSentence = true;
+// Symmetrical two-line roll-up state
+let line1Words = [];
+let line2Words = [];
+const MAX_LINE_CHARS = 58; // Allows lines to extend across to the right side
 
-const MAX_LINE_CHARS = 42;
+function initCaptionOverlay() {
+  if (captionBox) return;
 
-function getActiveVideo() {
-  const videos = Array.from(document.querySelectorAll("video"));
-  return videos.find(v => !v.paused && v.currentTime > 0) || videos[0] || null;
-}
-
-function ensureCaptionElements() {
-  if (captionWrapper && document.body.contains(captionWrapper)) return;
-
-  captionWrapper = document.createElement("div");
-  captionWrapper.id = "universal-ai-cc-root";
-  captionWrapper.style.cssText = `
-    position: fixed;
-    bottom: 80px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: fit-content;
-    max-width: 85vw;
-    text-align: center;
-    z-index: 2147483647;
-    pointer-events: none;
+  captionBox = document.createElement("div");
+  captionBox.id = "ai-live-caption-box";
+  captionBox.setAttribute("style", `
+    position: fixed !important;
+    z-index: 2147483647 !important;
+    pointer-events: none !important;
+    background: transparent !important;
     display: none;
-    transition: opacity 0.15s ease;
-  `;
+    flex-direction: column !important;
+    align-items: center !important;
+    box-sizing: border-box !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif !important;
+    font-size: 18px !important;
+    font-weight: 600 !important;
+    line-height: 1.4 !important;
+    transition: opacity 0.2s ease;
+  `);
 
-  textSpan = document.createElement("span");
-  textSpan.style.cssText = `
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 20px;
-    font-weight: 600;
-    line-height: 1.5;
-    color: #ffffff;
-    background: rgba(10, 10, 14, 0.88);
-    padding: 6px 14px;
-    border-radius: 4px;
-    box-decoration-break: clone;
-    -webkit-box-decoration-break: clone;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.6);
-    text-shadow: 0 1px 2px rgba(0,0,0,0.9);
-    white-space: pre-wrap;
-    display: inline-block;
+  // Line 1 Container & Span
+  line1El = document.createElement("div");
+  line1El.style.cssText = "margin-bottom: 5px; display: none; text-align: center; max-width: 100%;";
+  span1El = document.createElement("span");
+  span1El.style.cssText = `
+    background: rgba(8, 8, 8, 0.86) !important;
+    color: #ffffff !important;
+    padding: 5px 12px !important;
+    border-radius: 4px !important;
+    display: inline-block !important;
+    box-decoration-break: clone !important;
+    -webkit-box-decoration-break: clone !important;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.95) !important;
   `;
+  line1El.appendChild(span1El);
 
-  captionWrapper.appendChild(textSpan);
-  document.body.appendChild(captionWrapper);
+  // Line 2 Container & Span
+  line2El = document.createElement("div");
+  line2El.style.cssText = "display: none; text-align: center; max-width: 100%;";
+  span2El = document.createElement("span");
+  span2El.style.cssText = `
+    background: rgba(8, 8, 8, 0.86) !important;
+    color: #ffffff !important;
+    padding: 5px 12px !important;
+    border-radius: 4px !important;
+    display: inline-block !important;
+    box-decoration-break: clone !important;
+    -webkit-box-decoration-break: clone !important;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.95) !important;
+  `;
+  line2El.appendChild(span2El);
+
+  captionBox.appendChild(line1El);
+  captionBox.appendChild(line2El);
+  document.body.appendChild(captionBox);
+
+  window.addEventListener("scroll", updateOverlayPosition, { passive: true, capture: true });
+  window.addEventListener("resize", updateOverlayPosition, { passive: true });
 }
 
-function appendSpeech(text) {
-  ensureCaptionElements();
-  if (!captionWrapper || !isEnabled) return;
+function findActiveVideo() {
+  const videos = Array.from(document.querySelectorAll("video"));
+  if (!videos.length) return null;
+  const playing = videos.find((v) => !v.paused && !v.ended && v.readyState > 2);
+  if (playing) return playing;
 
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return;
+  return videos.sort((a, b) => {
+    const ra = a.getBoundingClientRect();
+    const rb = b.getBoundingClientRect();
+    return (rb.width * rb.height) - (ra.width * ra.height);
+  })[0];
+}
 
-  captionWrapper.style.display = "block";
-  textSpan.style.color = "#ffffff";
+function updateOverlayPosition() {
+  if (!captionBox) return;
 
-  for (let rawWord of words) {
-    let word = rawWord;
-    if (isNewSentence) {
-      isNewSentence = false;
-      word = word.charAt(0).toUpperCase() + word.slice(1);
+  const fsElement = document.fullscreenElement || document.webkitFullscreenElement;
+  if (fsElement) {
+    if (captionBox.parentElement !== fsElement && fsElement.appendChild) {
+      fsElement.appendChild(captionBox);
     }
-
-    if ((line2Text + " " + word).trim().length > MAX_LINE_CHARS) {
-      line1Text = line2Text;
-      line2Text = word;
-    } else {
-      line2Text = line2Text ? `${line2Text} ${word}` : word;
-    }
+    captionBox.style.position = "absolute";
+    captionBox.style.left = "50%";
+    captionBox.style.top = "auto";
+    captionBox.style.bottom = "8%";
+    captionBox.style.transform = "translateX(-50%)";
+    captionBox.style.width = "85%";
+    captionBox.style.fontSize = "22px";
+    return;
   }
 
-  textSpan.innerText = line1Text ? `${line1Text}\n${line2Text}` : line2Text;
+  if (captionBox.parentElement !== document.body) {
+    document.body.appendChild(captionBox);
+    captionBox.style.position = "fixed";
+    captionBox.style.bottom = "auto";
+    captionBox.style.fontSize = "18px";
+  }
 
-  clearTimeout(pauseTimer);
-  pauseTimer = setTimeout(() => {
-    isNewSentence = true;
-    if (line2Text) {
-      line1Text = line2Text;
-      line2Text = "";
-    }
-  }, 1800);
+  if (!targetVideo) targetVideo = findActiveVideo();
+  if (!targetVideo) {
+    captionBox.style.display = "none";
+    return;
+  }
+
+  const rect = targetVideo.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0 || rect.bottom < 0 || rect.top > window.innerHeight) {
+    captionBox.style.display = "none";
+    return;
+  }
+
+  // Extend evenly across the player
+  captionBox.style.width = `${Math.min(rect.width * 0.92, 850)}px`;
+
+  const bottomOffset = Math.max(34, rect.height * 0.12);
+  captionBox.style.left = `${rect.left + rect.width / 2}px`;
+  captionBox.style.top = `${rect.bottom - bottomOffset}px`;
+  captionBox.style.transform = "translate(-50%, -100%)";
+}
+
+function renderLines() {
+  if (line1Words.length > 0) {
+    span1El.textContent = line1Words.join(" ");
+    line1El.style.display = "block";
+  } else {
+    line1El.style.display = "none";
+  }
+
+  if (line2Words.length > 0) {
+    span2El.textContent = line2Words.join(" ");
+    line2El.style.display = "block";
+  } else {
+    line2El.style.display = "none";
+  }
+
+  if (line1Words.length > 0 || line2Words.length > 0) {
+    captionBox.style.display = "flex";
+    captionBox.style.opacity = "1";
+    updateOverlayPosition();
+  }
+}
+
+function appendTranscription(newText) {
+  const incoming = newText.trim().split(/\s+/).filter(Boolean);
+  if (!incoming.length) return;
 
   clearTimeout(clearTimer);
-  clearTimer = setTimeout(() => {
-    line1Text = "";
-    line2Text = "";
-    isNewSentence = true;
-    if (captionWrapper) captionWrapper.style.display = "none";
-  }, 5000);
-}
 
-function toggleCaptions() {
-  isEnabled = !isEnabled;
-  ensureCaptionElements();
+  for (const word of incoming) {
+    const lastActive = line2Words.length ? line2Words[line2Words.length - 1] : line1Words[line1Words.length - 1];
+    if (lastActive && lastActive.toLowerCase() === word.toLowerCase()) {
+      continue;
+    }
 
-  if (isEnabled) {
-    captionWrapper.style.display = "block";
-    textSpan.style.color = "#ffca28";
-    textSpan.innerText = "Local AI Captions: Listening...";
-    chrome.runtime.sendMessage({ action: "get_status" });
-  } else {
-    clearTimeout(clearTimer);
-    clearTimeout(pauseTimer);
-    line1Text = "";
-    line2Text = "";
-    isNewSentence = true;
-    captionWrapper.style.display = "none";
+    if (line2Words.length === 0) {
+      const candidate = line1Words.concat([word]).join(" ");
+      const isEnd = /[.!?]$/.test(line1Words[line1Words.length - 1] || "");
+
+      if (candidate.length <= MAX_LINE_CHARS && !isEnd) {
+        line1Words.push(word);
+      } else {
+        line2Words.push(word);
+      }
+    } else {
+      const candidate = line2Words.concat([word]).join(" ");
+      const isEnd = /[.!?]$/.test(line2Words[line2Words.length - 1] || "");
+
+      if (candidate.length <= MAX_LINE_CHARS && !isEnd) {
+        line2Words.push(word);
+      } else {
+        line1Words = [...line2Words];
+        line2Words = [word];
+      }
+    }
   }
+
+  renderLines();
+
+  clearTimer = setTimeout(() => {
+    captionBox.style.opacity = "0";
+    setTimeout(() => {
+      captionBox.style.display = "none";
+      line1Words = [];
+      line2Words = [];
+      line1El.style.display = "none";
+      line2El.style.display = "none";
+    }, 200);
+  }, 3200);
 }
 
-// Global Hotkey: Alt + C toggles live captions on any website
-window.addEventListener("keydown", (e) => {
-  if (e.altKey && (e.key === "c" || e.key === "C")) {
-    toggleCaptions();
+function attachVideoTracker(video) {
+  if (!video) return;
+  targetVideo = video;
+  if (resizeObserver) resizeObserver.disconnect();
+  resizeObserver = new ResizeObserver(updateOverlayPosition);
+  resizeObserver.observe(video);
+  updateOverlayPosition();
+}
+
+chrome.runtime.onMessage.addListener((data) => {
+  initCaptionOverlay();
+  if (data.text !== undefined) {
+    if (!targetVideo) attachVideoTracker(findActiveVideo());
+    appendTranscription(data.text);
   }
 });
 
-// Click extension icon from browser toolbar to toggle
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.action === "toggle_from_icon") {
-    toggleCaptions();
-  } else if (isEnabled && msg.type === "transcript" && msg.text) {
-    appendSpeech(msg.text);
+window.addEventListener("keydown", (e) => {
+  if (e.altKey && (e.key === "c" || e.key === "C")) {
+    initCaptionOverlay();
+    const active = findActiveVideo();
+    if (active) attachVideoTracker(active);
   }
 });

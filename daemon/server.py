@@ -18,7 +18,6 @@ loopback = None
 tray_icon = None
 
 def create_tray_image(color="gray"):
-    # Generate a small 64x64 dynamic icon for the Windows taskbar tray
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     fill_color = (0, 200, 83) if color == "green" else (120, 120, 120)
@@ -29,15 +28,18 @@ def create_tray_image(color="gray"):
 def update_tray_status(active: bool):
     global tray_icon
     if tray_icon:
-        tray_icon.icon = create_tray_image("green" if active else "gray")
-        tray_icon.title = f"Local Live Captions - {'Transcribing' if active else 'Idle (0 clients)'}"
+        try:
+            tray_icon.icon = create_tray_image("green" if active else "gray")
+            tray_icon.title = f"Local Live Captions - {'Transcribing' if active else 'Idle (0 clients)'}"
+        except Exception:
+            pass
 
 async def broadcast_transcript(text: str):
     if not CONNECTED_CLIENTS or not text.strip():
         return
     payload = json.dumps({"type": "transcript", "text": text})
     disconnected = set()
-    for ws in CONNECTED_CLIENTS:
+    for ws in list(CONNECTED_CLIENTS):
         try:
             await ws.send(payload)
         except Exception:
@@ -45,11 +47,10 @@ async def broadcast_transcript(text: str):
     CONNECTED_CLIENTS.difference_update(disconnected)
 
 def on_audio_chunk(audio_data):
-    # Only process and run CUDA tensors if clients are actually listening
     if not CONNECTED_CLIENTS or engine is None:
         return
     transcript = engine.process_audio_chunk(audio_data)
-    if transcript and loop:
+    if transcript and loop and not loop.is_closed():
         asyncio.run_coroutine_threadsafe(broadcast_transcript(transcript), loop)
 
 async def client_handler(websocket):
@@ -57,7 +58,6 @@ async def client_handler(websocket):
     CONNECTED_CLIENTS.add(websocket)
     update_tray_status(True)
 
-    # First client joined: wake up audio loopback
     if len(CONNECTED_CLIENTS) == 1 and loopback is not None:
         loopback.start(on_audio_chunk)
 
@@ -73,7 +73,6 @@ async def client_handler(websocket):
         pass
     finally:
         CONNECTED_CLIENTS.discard(websocket)
-        # Last client left: sleep audio capture to guarantee 0% GPU load
         if len(CONNECTED_CLIENTS) == 0:
             update_tray_status(False)
             if loopback is not None:
@@ -96,11 +95,9 @@ async def main():
     global loop, engine, loopback
     loop = asyncio.get_running_loop()
 
-    # 1. Load weights onto RTX 5080 once at boot
     engine = StreamingASREngine()
     loopback = LoopbackCapture()
 
-    # 2. WebSocket Server on 0.0.0.0:8765
     server = await websockets.serve(
         client_handler,
         "0.0.0.0",
@@ -113,7 +110,6 @@ async def main():
     await asyncio.Future()
 
 if __name__ == "__main__":
-    # Start System Tray in background thread
     tray_thread = threading.Thread(target=run_tray, daemon=True)
     tray_thread.start()
 
