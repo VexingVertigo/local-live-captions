@@ -7,10 +7,42 @@ let span2El = null;
 let resizeObserver = null;
 let clearTimer = null;
 
-// Symmetrical two-line roll-up state
+// User configurable settings
+let settings = {
+  speakerColors: false,
+  textColor: "#ffffff",
+  showBackground: true,
+  bgOpacity: 85
+};
+
+// Standard multi-speaker color scheme (Yellow, Cyan, Green, Pink)
+const SPEAKER_COLORS = ["#facc15", "#38bdf8", "#4ade80", "#f472b6"];
+
 let line1Words = [];
 let line2Words = [];
-const MAX_LINE_CHARS = 58; // Allows lines to extend across to the right side
+let line1Speaker = 0;
+let line2Speaker = 0;
+const MAX_LINE_CHARS = 52;
+
+// Load initial settings from storage
+function loadSavedSettings() {
+  if (chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get(settings, (items) => {
+      if (items) {
+        settings = Object.assign(settings, items);
+        renderLines();
+      }
+    });
+  } else {
+    try {
+      const saved = localStorage.getItem("ai_caption_settings");
+      if (saved) {
+        settings = Object.assign(settings, JSON.parse(saved));
+        renderLines();
+      }
+    } catch (e) {}
+  }
+}
 
 function initCaptionOverlay() {
   if (captionBox) return;
@@ -33,35 +65,29 @@ function initCaptionOverlay() {
     transition: opacity 0.2s ease;
   `);
 
-  // Line 1 Container & Span
   line1El = document.createElement("div");
   line1El.style.cssText = "margin-bottom: 5px; display: none; text-align: center; max-width: 100%;";
   span1El = document.createElement("span");
   span1El.style.cssText = `
-    background: rgba(8, 8, 8, 0.86) !important;
-    color: #ffffff !important;
     padding: 5px 12px !important;
     border-radius: 4px !important;
     display: inline-block !important;
     box-decoration-break: clone !important;
     -webkit-box-decoration-break: clone !important;
-    text-shadow: 0 2px 4px rgba(0,0,0,0.95) !important;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.9) !important;
   `;
   line1El.appendChild(span1El);
 
-  // Line 2 Container & Span
   line2El = document.createElement("div");
   line2El.style.cssText = "display: none; text-align: center; max-width: 100%;";
   span2El = document.createElement("span");
   span2El.style.cssText = `
-    background: rgba(8, 8, 8, 0.86) !important;
-    color: #ffffff !important;
     padding: 5px 12px !important;
     border-radius: 4px !important;
     display: inline-block !important;
     box-decoration-break: clone !important;
     -webkit-box-decoration-break: clone !important;
-    text-shadow: 0 2px 4px rgba(0,0,0,0.95) !important;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.9) !important;
   `;
   line2El.appendChild(span2El);
 
@@ -123,7 +149,6 @@ function updateOverlayPosition() {
     return;
   }
 
-  // Extend evenly across the player
   captionBox.style.width = `${Math.min(rect.width * 0.92, 850)}px`;
 
   const bottomOffset = Math.max(34, rect.height * 0.12);
@@ -133,15 +158,42 @@ function updateOverlayPosition() {
 }
 
 function renderLines() {
+  if (!span1El || !span2El) return;
+
+  // Background box & opacity styling
+  const alpha = (settings.bgOpacity / 100).toFixed(2);
+  const bgStyle = settings.showBackground
+    ? `rgba(8, 8, 8, ${alpha})`
+    : "transparent";
+
+  span1El.style.setProperty("background", bgStyle, "important");
+  span2El.style.setProperty("background", bgStyle, "important");
+
+  // Determine line colors
+  let color1 = settings.textColor;
+  let color2 = settings.textColor;
+
+  if (settings.speakerColors) {
+    color1 = SPEAKER_COLORS[line1Speaker % SPEAKER_COLORS.length];
+    color2 = SPEAKER_COLORS[line2Speaker % SPEAKER_COLORS.length];
+  }
+
+  span1El.style.color = color1;
+  span2El.style.color = color2;
+
+  // Render Line 1
   if (line1Words.length > 0) {
-    span1El.textContent = line1Words.join(" ");
+    const isMulti = settings.speakerColors && (line1Words.length > 0 && line2Words.length > 0 && line1Speaker !== line2Speaker);
+    span1El.textContent = (isMulti ? "- " : "") + line1Words.join(" ");
     line1El.style.display = "block";
   } else {
     line1El.style.display = "none";
   }
 
+  // Render Line 2
   if (line2Words.length > 0) {
-    span2El.textContent = line2Words.join(" ");
+    const isMulti = settings.speakerColors && (line1Words.length > 0 && line2Words.length > 0 && line1Speaker !== line2Speaker);
+    span2El.textContent = (isMulti ? "- " : "") + line2Words.join(" ");
     line2El.style.display = "block";
   } else {
     line2El.style.display = "none";
@@ -154,26 +206,33 @@ function renderLines() {
   }
 }
 
-function appendTranscription(newText) {
+function appendTranscription(newText, incomingSpeaker = 0) {
   const incoming = newText.trim().split(/\s+/).filter(Boolean);
   if (!incoming.length) return;
 
   clearTimeout(clearTimer);
 
   for (const word of incoming) {
-    const lastActive = line2Words.length ? line2Words[line2Words.length - 1] : line1Words[line1Words.length - 1];
-    if (lastActive && lastActive.toLowerCase() === word.toLowerCase()) {
+    // If speaker changes while speaker color-coding is enabled, roll Line 2 up
+    if (settings.speakerColors && line2Words.length > 0 && incomingSpeaker !== line2Speaker) {
+      line1Words = [...line2Words];
+      line1Speaker = line2Speaker;
+      line2Words = [word];
+      line2Speaker = incomingSpeaker;
       continue;
     }
 
     if (line2Words.length === 0) {
+      if (line1Words.length === 0) line1Speaker = incomingSpeaker;
+
       const candidate = line1Words.concat([word]).join(" ");
       const isEnd = /[.!?]$/.test(line1Words[line1Words.length - 1] || "");
 
-      if (candidate.length <= MAX_LINE_CHARS && !isEnd) {
+      if (candidate.length <= MAX_LINE_CHARS && !isEnd && (!settings.speakerColors || incomingSpeaker === line1Speaker)) {
         line1Words.push(word);
       } else {
         line2Words.push(word);
+        line2Speaker = incomingSpeaker;
       }
     } else {
       const candidate = line2Words.concat([word]).join(" ");
@@ -183,7 +242,9 @@ function appendTranscription(newText) {
         line2Words.push(word);
       } else {
         line1Words = [...line2Words];
+        line1Speaker = line2Speaker;
         line2Words = [word];
+        line2Speaker = incomingSpeaker;
       }
     }
   }
@@ -211,11 +272,21 @@ function attachVideoTracker(video) {
   updateOverlayPosition();
 }
 
+// Extension message listener
 chrome.runtime.onMessage.addListener((data) => {
   initCaptionOverlay();
+
+  // Settings update event from popup
+  if (data.action === "update_settings" && data.settings) {
+    settings = Object.assign(settings, data.settings);
+    renderLines();
+    return;
+  }
+
+  // Incoming transcription text
   if (data.text !== undefined) {
     if (!targetVideo) attachVideoTracker(findActiveVideo());
-    appendTranscription(data.text);
+    appendTranscription(data.text, data.speaker !== undefined ? data.speaker : 0);
   }
 });
 
@@ -226,3 +297,10 @@ window.addEventListener("keydown", (e) => {
     if (active) attachVideoTracker(active);
   }
 });
+
+// Ensure Chromium service worker is awake and connected upon tab initialization
+try {
+  chrome.runtime.sendMessage({ action: "ensure_connected" }).catch(() => {});
+} catch (e) {}
+
+loadSavedSettings();

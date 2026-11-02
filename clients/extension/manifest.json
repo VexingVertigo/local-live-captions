@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Local Live Captions",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "On-device real-time AI live captions for any web video player.",
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "tabs"
   ],
   "host_permissions": [
     "<all_urls>"
