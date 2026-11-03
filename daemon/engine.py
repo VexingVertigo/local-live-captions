@@ -120,6 +120,9 @@ class StreamingASREngine:
             chunk_raw = np.frombuffer(audio_input, dtype=np.int16).astype(np.float32) / 32768.0
         else:
             chunk_raw = np.asarray(audio_input, dtype=np.float32)
+            # If stereo from Windows loopback (shape: [N, 2]), downmix to mono
+            if chunk_raw.ndim == 2:
+                chunk_raw = np.mean(chunk_raw, axis=1)
 
         if len(chunk_raw) == 0:
             return None
@@ -132,7 +135,8 @@ class StreamingASREngine:
         session.buffer = session.buffer[self.chunk_size:]
 
         # Skip silence
-        if float(np.sqrt(np.mean(chunk ** 2))) < 0.003:
+        rms = float(np.sqrt(np.mean(chunk ** 2)))
+        if rms < 0.003:
             return None
 
         try:
@@ -150,7 +154,9 @@ class StreamingASREngine:
             if not text:
                 return None
 
-            return {"text": text, "speaker": self._identify_speaker(session, chunk)}
+            speaker = self._identify_speaker(session, chunk)
+            print(f"[ASR ({session_id})] -> \"{text}\" (Speaker {speaker})")
+            return {"text": text, "speaker": speaker}
 
         except Exception as e:
             print(f"[Whisper Error] {e}")

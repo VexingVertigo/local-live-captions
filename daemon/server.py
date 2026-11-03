@@ -83,9 +83,11 @@ async def client_handler(websocket):
     client_id = f"client_{id(websocket)}"
     CONNECTED_CLIENTS.add(websocket)
     update_tray_status(True)
+    print(f"[Server] Client connected: {client_id} (Total: {len(CONNECTED_CLIENTS)})")
 
     # Start loopback capture if on desktop and first passive client connects
     if loopback is not None and len(CONNECTED_CLIENTS) == 1:
+        print("[Server] Starting audio loopback capture...")
         loopback.start(on_loopback_audio)
 
     try:
@@ -96,7 +98,6 @@ async def client_handler(websocket):
         }))
 
         async for message in websocket:
-            # 1. Binary payload: Client (Android TV) is streaming its own PCM audio
             if isinstance(message, bytes):
                 STREAMING_CLIENTS.add(websocket)
                 async with inference_lock:
@@ -111,7 +112,6 @@ async def client_handler(websocket):
                         "speaker": result["speaker"]
                     }))
 
-            # 2. String/JSON payload: Heartbeats or UI pings
             elif isinstance(message, str):
                 try:
                     data = json.loads(message)
@@ -120,16 +120,18 @@ async def client_handler(websocket):
                 except Exception:
                     pass
 
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[Server] Client connection error: {e}")
     finally:
         CONNECTED_CLIENTS.discard(websocket)
         STREAMING_CLIENTS.discard(websocket)
         engine.remove_session(client_id)
+        print(f"[Server] Client disconnected: {client_id} (Remaining: {len(CONNECTED_CLIENTS)})")
 
         if len(CONNECTED_CLIENTS) == 0:
             update_tray_status(False)
             if loopback is not None:
+                print("[Server] Stopping audio loopback capture (no active clients).")
                 loopback.stop()
 
 
