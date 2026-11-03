@@ -1,4 +1,4 @@
-Write-Host "=== Local Live Captions: System Compatibility & Setup ===" -ForegroundColor Cyan
+Write-Host "=== Local Live Captions: Windows Compatibility & Setup ===" -ForegroundColor Cyan
 
 # 1. Python Architecture & Version Check
 $pythonVersion = python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
@@ -26,6 +26,9 @@ if ($gpuName) {
 }
 
 # 3. Virtual Environment Creation
+$repoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location $repoRoot
+
 if (-not (Test-Path ".venv")) {
     Write-Host "[*] Creating virtual environment (.venv)..."
     python -m venv .venv
@@ -38,30 +41,32 @@ $python = ".\.venv\Scripts\python.exe"
 Write-Host "[*] Upgrading pip and core build tools..."
 & $pip install --upgrade pip setuptools wheel --quiet
 
-Write-Host "[*] Installing PyTorch with CUDA support..."
+Write-Host "[*] Installing PyTorch with CUDA 12 support..."
 & $pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 --quiet
 
-Write-Host "[*] Installing Faster-Whisper, NeMo Diarizer, and Audio Capture..."
-& $pip install faster-whisper nemo_toolkit[asr] websockets sounddevice numpy pystray Pillow --quiet
+Write-Host "[*] Installing Faster-Whisper, WebSockets, and Audio Capture..."
+& $pip install faster-whisper websockets sounddevice numpy pystray Pillow --quiet
 
 if ($deviceMode -eq "cuda") {
     Write-Host "[*] Installing CTranslate2 CUDA 12 runtime binaries..."
-    # Only install cublas; omit cudnn to prevent sublibrary version mismatches with PyTorch
-    & $pip install nvidia-cublas-cu12 --quiet
+    & $pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 --quiet
 }
 
 # 5. Sanity Check
 Write-Host "[*] Verifying runtime inference..."
 $verifyScript = @"
+import ctranslate2
 import torch
 from faster_whisper import WhisperModel
 
 gpu_available = torch.cuda.is_available()
-print(f'CUDA Accessible: {gpu_available}')
+c2_devices = ctranslate2.get_cuda_device_count()
+print(f'PyTorch CUDA Accessible: {gpu_available}')
+print(f'CTranslate2 CUDA Devices: {c2_devices}')
 if gpu_available:
     print(f'Active Device: {torch.cuda.get_device_name(0)}')
 "@
 
 & $python -c $verifyScript
 
-Write-Host "`n[+] Setup complete! Run run_daemon.vbs to launch the background service." -ForegroundColor Green
+Write-Host "`n[+] Setup complete! Double-click run_daemon.vbs (silent) or run_daemon_debug.vbs (console) to launch." -ForegroundColor Green

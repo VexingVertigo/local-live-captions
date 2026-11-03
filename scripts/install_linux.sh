@@ -5,16 +5,17 @@ echo "============================================================"
 echo " Local Live Captions: Linux Installer & Environment Setup "
 echo "============================================================"
 
-# 1. Verify NVIDIA Driver & CUDA
-if ! command -v nvidia-smi &> /dev/null; then
-    echo "[ERROR] 'nvidia-smi' not found. Please install NVIDIA proprietary drivers."
-    exit 1
+# 1. Verify Hardware & Drivers
+if command -v nvidia-smi &> /dev/null; then
+    echo "[OK] NVIDIA GPU detected:"
+    nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+    DEVICE_MODE="cuda"
+else
+    echo "[WARN] 'nvidia-smi' not found. Will default to CPU (int8) mode."
+    DEVICE_MODE="cpu"
 fi
 
-echo "[OK] NVIDIA GPU detected:"
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
-
-# 2. Check for Python 3.10+
+# 2. Check Python 3.10+
 if ! command -v python3 &> /dev/null; then
     echo "[ERROR] Python 3 is not installed. Please install python3 and python3-venv."
     exit 1
@@ -35,23 +36,36 @@ else
 fi
 
 source .venv/bin/activate
-pip install --upgrade pip setuptools wheel
+pip install --upgrade pip setuptools wheel --quiet
 
-# 4. Install CUDA-enabled PyTorch & Audio Stack
-echo "[+] Installing PyTorch with CUDA support..."
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+# 4. Install PyTorch & Faster-Whisper
+echo "[+] Installing PyTorch with CUDA 12 support..."
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124 --quiet
 
-echo "[+] Installing audio capture, WebSocket, and NVIDIA monitoring dependencies..."
-pip install websockets soundcard numpy pynvml
+echo "[+] Installing Faster-Whisper, WebSockets, and Audio stack..."
+pip install faster-whisper websockets sounddevice numpy pynvml --quiet
 
-# 5. Install NeMo streaming toolkit
-echo "[+] Installing NVIDIA NeMo ASR tools..."
-pip install "nemo_toolkit[asr]" || echo "[!] Notice: If NeMo build fails from wheel, ensure libsndfile1-dev and ffmpeg are installed via apt."
+# 5. Install CUDA 12 Shared Libraries for CTranslate2
+if [ "$DEVICE_MODE" = "cuda" ]; then
+    echo "[+] Installing CUDA 12 runtime libraries (cuBLAS, cuDNN)..."
+    pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 --quiet
+fi
+
+# 6. Sanity Check
+echo "[+] Verifying faster-whisper runtime..."
+python3 -c "
+import ctranslate2
+devs = ctranslate2.get_cuda_device_count()
+print(f'CTranslate2 CUDA Devices: {devs}')
+from faster_whisper import WhisperModel
+print('faster-whisper verification: OK')
+"
 
 echo ""
 echo "============================================================"
 echo " Setup complete! "
-echo " To start the local daemon, run: "
-echo "   source .venv/bin/activate"
-echo "   python daemon/server.py"
+echo " To start the server with terminal output: "
+echo "   ./run_daemon_debug.sh"
+echo " To start silently in background: "
+echo "   ./run_daemon.sh"
 echo "============================================================"
