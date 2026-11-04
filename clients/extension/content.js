@@ -6,6 +6,7 @@ let span1El = null;
 let span2El = null;
 let resizeObserver = null;
 let clearTimer = null;
+let overlayEnabled = true;
 
 // User configurable settings
 let settings = {
@@ -24,7 +25,6 @@ let line1Speaker = 0;
 let line2Speaker = 0;
 const MAX_LINE_CHARS = 52;
 
-// Load initial settings from storage
 function loadSavedSettings() {
   if (chrome.storage && chrome.storage.local) {
     chrome.storage.local.get(settings, (items) => {
@@ -113,7 +113,7 @@ function findActiveVideo() {
 }
 
 function updateOverlayPosition() {
-  if (!captionBox) return;
+  if (!captionBox || !overlayEnabled) return;
 
   const fsElement = document.fullscreenElement || document.webkitFullscreenElement;
   if (fsElement) {
@@ -137,7 +137,11 @@ function updateOverlayPosition() {
     captionBox.style.fontSize = "18px";
   }
 
-  if (!targetVideo) targetVideo = findActiveVideo();
+  // Refresh targetVideo if detached from DOM during YouTube client-side routing
+  if (!targetVideo || !document.contains(targetVideo)) {
+    targetVideo = findActiveVideo();
+  }
+
   if (!targetVideo) {
     captionBox.style.display = "none";
     return;
@@ -158,9 +162,8 @@ function updateOverlayPosition() {
 }
 
 function renderLines() {
-  if (!span1El || !span2El) return;
+  if (!span1El || !span2El || !overlayEnabled) return;
 
-  // Background box & opacity styling
   const alpha = (settings.bgOpacity / 100).toFixed(2);
   const bgStyle = settings.showBackground
     ? `rgba(8, 8, 8, ${alpha})`
@@ -169,7 +172,6 @@ function renderLines() {
   span1El.style.setProperty("background", bgStyle, "important");
   span2El.style.setProperty("background", bgStyle, "important");
 
-  // Determine line colors
   let color1 = settings.textColor;
   let color2 = settings.textColor;
 
@@ -181,7 +183,6 @@ function renderLines() {
   span1El.style.color = color1;
   span2El.style.color = color2;
 
-  // Render Line 1
   if (line1Words.length > 0) {
     const isMulti = settings.speakerColors && (line1Words.length > 0 && line2Words.length > 0 && line1Speaker !== line2Speaker);
     span1El.textContent = (isMulti ? "- " : "") + line1Words.join(" ");
@@ -190,7 +191,6 @@ function renderLines() {
     line1El.style.display = "none";
   }
 
-  // Render Line 2
   if (line2Words.length > 0) {
     const isMulti = settings.speakerColors && (line1Words.length > 0 && line2Words.length > 0 && line1Speaker !== line2Speaker);
     span2El.textContent = (isMulti ? "- " : "") + line2Words.join(" ");
@@ -207,13 +207,14 @@ function renderLines() {
 }
 
 function appendTranscription(newText, incomingSpeaker = 0) {
+  if (!overlayEnabled) return;
+
   const incoming = newText.trim().split(/\s+/).filter(Boolean);
   if (!incoming.length) return;
 
   clearTimeout(clearTimer);
 
   for (const word of incoming) {
-    // If speaker changes while speaker color-coding is enabled, roll Line 2 up
     if (settings.speakerColors && line2Words.length > 0 && incomingSpeaker !== line2Speaker) {
       line1Words = [...line2Words];
       line1Speaker = line2Speaker;
@@ -252,6 +253,7 @@ function appendTranscription(newText, incomingSpeaker = 0) {
   renderLines();
 
   clearTimer = setTimeout(() => {
+    if (!captionBox) return;
     captionBox.style.opacity = "0";
     setTimeout(() => {
       captionBox.style.display = "none";
@@ -272,33 +274,38 @@ function attachVideoTracker(video) {
   updateOverlayPosition();
 }
 
-// Extension message listener
 chrome.runtime.onMessage.addListener((data) => {
   initCaptionOverlay();
 
-  // Settings update event from popup
   if (data.action === "update_settings" && data.settings) {
     settings = Object.assign(settings, data.settings);
     renderLines();
     return;
   }
 
-  // Incoming transcription text
   if (data.text !== undefined) {
-    if (!targetVideo) attachVideoTracker(findActiveVideo());
+    if (!targetVideo || !document.contains(targetVideo)) {
+      attachVideoTracker(findActiveVideo());
+    }
     appendTranscription(data.text, data.speaker !== undefined ? data.speaker : 0);
   }
 });
 
+// Alt + C toggles overlay on and off
 window.addEventListener("keydown", (e) => {
   if (e.altKey && (e.key === "c" || e.key === "C")) {
-    initCaptionOverlay();
-    const active = findActiveVideo();
-    if (active) attachVideoTracker(active);
+    overlayEnabled = !overlayEnabled;
+    if (!overlayEnabled) {
+      if (captionBox) captionBox.style.display = "none";
+    } else {
+      initCaptionOverlay();
+      const active = findActiveVideo();
+      if (active) attachVideoTracker(active);
+      renderLines();
+    }
   }
 });
 
-// Ensure Chromium service worker is awake and connected upon tab initialization
 try {
   chrome.runtime.sendMessage({ action: "ensure_connected" }).catch(() => {});
 } catch (e) {}

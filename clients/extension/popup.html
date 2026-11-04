@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <style>
     body {
-      width: 280px;
+      width: 290px;
       margin: 0;
       padding: 14px 16px;
       background: #141417;
@@ -42,7 +42,7 @@
       width: 8px;
       height: 8px;
       border-radius: 50%;
-      background: #71717a;
+      background: #ef4444;
     }
 
     .status-dot.connected {
@@ -77,7 +77,6 @@
       font-size: 12px;
     }
 
-    /* Subtle amber pill tag */
     .badge-exp {
       background: rgba(245, 158, 11, 0.15);
       color: #f59e0b;
@@ -90,7 +89,6 @@
       text-transform: uppercase;
     }
 
-    /* Switch styling */
     .switch {
       position: relative;
       display: inline-block;
@@ -133,7 +131,6 @@
       transform: translateX(16px);
     }
 
-    /* Color input styling */
     input[type="color"] {
       -webkit-appearance: none;
       border: 1px solid #3f3f46;
@@ -154,7 +151,6 @@
       border-radius: 3px;
     }
 
-    /* Range slider styling */
     .range-group {
       margin-bottom: 10px;
     }
@@ -177,6 +173,21 @@
       cursor: pointer;
     }
 
+    .text-input {
+      background: #1f1f23;
+      border: 1px solid #3f3f46;
+      border-radius: 4px;
+      color: #fafafa;
+      padding: 4px 8px;
+      font-size: 12px;
+      width: 130px;
+      outline: none;
+    }
+
+    .text-input:focus {
+      border-color: #3b82f6;
+    }
+
     .footer {
       margin-top: 14px;
       padding-top: 8px;
@@ -194,6 +205,12 @@
       <div id="statusDot" class="status-dot"></div>
       <span id="statusText">Connecting...</span>
     </div>
+  </div>
+
+  <div class="section-title">Connection</div>
+  <div class="control-row">
+    <span class="label">Server Host</span>
+    <input type="text" id="serverHostInput" class="text-input" placeholder="127.0.0.1:8765">
   </div>
 
   <div class="section-title">Speaker Diarization</div>

@@ -1,4 +1,5 @@
 const defaultSettings = {
+  serverHost: "127.0.0.1:8765",
   speakerColors: false,
   textColor: "#ffffff",
   showBackground: true,
@@ -7,37 +8,45 @@ const defaultSettings = {
 
 const statusDot = document.getElementById("statusDot");
 const statusText = document.getElementById("statusText");
+const serverHostInput = document.getElementById("serverHostInput");
 const speakerColorsToggle = document.getElementById("speakerColorsToggle");
 const textColorPicker = document.getElementById("textColorPicker");
 const showBgToggle = document.getElementById("showBgToggle");
 const opacityRange = document.getElementById("opacityRange");
 const opacityVal = document.getElementById("opacityVal");
 
-// Check daemon connection
-chrome.runtime.sendMessage({ action: "get_status" }, (res) => {
-  if (res && res.connected) {
+function updateStatusUI(connected, message) {
+  if (connected) {
     statusDot.classList.add("connected");
     statusText.textContent = "Connected";
   } else {
     statusDot.classList.remove("connected");
-    statusText.textContent = "Offline";
-  }
-});
-
-// Load preferences from storage
-function loadSettings() {
-  if (chrome.storage && chrome.storage.local) {
-    chrome.storage.local.get(defaultSettings, (items) => {
-      applyToUI(items);
-    });
-  } else {
-    // Fallback if storage API permission is not in manifest
-    const saved = localStorage.getItem("ai_caption_settings");
-    applyToUI(saved ? JSON.parse(saved) : defaultSettings);
+    statusText.textContent = message || "Offline";
   }
 }
 
+// Initial status request to background script
+chrome.runtime.sendMessage({ action: "get_status" }, (res) => {
+  if (res) {
+    updateStatusUI(res.connected, res.connected ? "Connected" : "Offline");
+  }
+});
+
+// Real-time status updates broadcast from background.js
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === "status_update") {
+    updateStatusUI(message.connected, message.status === "connected" ? "Connected" : "Offline");
+  }
+});
+
+function loadSettings() {
+  chrome.storage.local.get(defaultSettings, (items) => {
+    applyToUI(items);
+  });
+}
+
 function applyToUI(s) {
+  serverHostInput.value = s.serverHost || "127.0.0.1:8765";
   speakerColorsToggle.checked = !!s.speakerColors;
   textColorPicker.value = s.textColor || "#ffffff";
   showBgToggle.checked = s.showBackground !== false;
@@ -45,9 +54,10 @@ function applyToUI(s) {
   opacityVal.textContent = `${opacityRange.value}%`;
 }
 
-// Save & broadcast settings to tabs
 function saveAndBroadcast() {
+  const currentHost = serverHostInput.value.trim() || "127.0.0.1:8765";
   const settings = {
+    serverHost: currentHost,
     speakerColors: speakerColorsToggle.checked,
     textColor: textColorPicker.value,
     showBackground: showBgToggle.checked,
@@ -56,12 +66,10 @@ function saveAndBroadcast() {
 
   opacityVal.textContent = `${settings.bgOpacity}%`;
 
-  if (chrome.storage && chrome.storage.local) {
-    chrome.storage.local.set(settings);
-  }
-  localStorage.setItem("ai_caption_settings", JSON.stringify(settings));
+  chrome.storage.local.set(settings, () => {
+    chrome.runtime.sendMessage({ action: "reconnect" });
+  });
 
-  // Send update to all open video tabs
   chrome.tabs.query({}, (tabs) => {
     for (const tab of tabs) {
       if (tab.id) {
@@ -74,7 +82,7 @@ function saveAndBroadcast() {
   });
 }
 
-// Event Listeners
+serverHostInput.addEventListener("change", saveAndBroadcast);
 speakerColorsToggle.addEventListener("change", saveAndBroadcast);
 textColorPicker.addEventListener("input", saveAndBroadcast);
 showBgToggle.addEventListener("change", saveAndBroadcast);

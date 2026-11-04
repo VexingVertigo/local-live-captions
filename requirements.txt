@@ -1,0 +1,9 @@
+faster-whisper
+websockets
+soundcard
+numpy
+pystray
+Pillow
+pynvml
+nvidia-cublas-cu12
+nvidia-cudnn-cu12

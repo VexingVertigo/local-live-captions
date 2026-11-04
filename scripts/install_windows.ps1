@@ -45,7 +45,7 @@ Write-Host "[*] Installing PyTorch with CUDA 12 support..."
 & $pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 --quiet
 
 Write-Host "[*] Installing Faster-Whisper, WebSockets, and Audio Capture..."
-& $pip install faster-whisper websockets sounddevice numpy pystray Pillow --quiet
+& $pip install faster-whisper websockets soundcard numpy pystray Pillow --quiet
 
 if ($deviceMode -eq "cuda") {
     Write-Host "[*] Installing CTranslate2 CUDA 12 runtime binaries..."

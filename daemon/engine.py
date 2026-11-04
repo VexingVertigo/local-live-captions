@@ -18,12 +18,18 @@ if sys.platform == "win32":
 torch.backends.cudnn.enabled = False
 
 from faster_whisper import WhisperModel
-import nemo.collections.asr as nemo_asr
+
+try:
+    import nemo.collections.asr as nemo_asr
+    NEMO_AVAILABLE = True
+except ImportError:
+    NEMO_AVAILABLE = False
 
 
 class ClientSession:
     def __init__(self):
-        self.buffer = np.zeros(0, dtype=np.float32)
+        self.audio_buffer = np.zeros(0, dtype=np.float32)
+        self.last_emitted_text = ""
         self.speaker_centroids = []
         self.current_speaker = 0
 
@@ -44,19 +50,24 @@ class StreamingASREngine:
             self.torch_device = torch.device("cpu")
             self.asr = WhisperModel(whisper_model, device="cpu", compute_type="int8")
 
-        print(f"[Engine] Loading ECAPA-TDNN Speaker Diarizer on {self.torch_device}...")
-        self.speaker_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name="ecapa_tdnn")
-        self.speaker_model = self.speaker_model.to(self.torch_device)
-        self.speaker_model.eval()
+        self.speaker_model = None
+        if NEMO_AVAILABLE:
+            try:
+                print(f"[Engine] Loading ECAPA-TDNN Speaker Diarizer on {self.torch_device}...")
+                self.speaker_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name="ecapa_tdnn")
+                self.speaker_model = self.speaker_model.to(self.torch_device)
+                self.speaker_model.eval()
+            except Exception as e:
+                print(f"[Engine Warning] Diarizer load failed ({e}). Running single-speaker mode.")
 
         self.sample_rate = 16000
-        self.chunk_size = int(self.sample_rate * 1.5)
+        # 1.2s minimum speech slice, 2.5s max clause buffer
+        self.min_chunk_samples = int(self.sample_rate * 1.2)
+        self.max_buffer_samples = int(self.sample_rate * 2.5)
         self.max_speakers = 4
         self.similarity_threshold = 0.60
-
-        # Isolated sessions dictionary: session_id -> ClientSession
         self.sessions = {}
-        print(f"[Engine] Engine online and ready.")
+        print(f"[Engine] Clean VAD clause engine ready.")
 
     def get_or_create_session(self, session_id: str) -> ClientSession:
         if session_id not in self.sessions:
@@ -67,7 +78,7 @@ class StreamingASREngine:
         self.sessions.pop(session_id, None)
 
     def _identify_speaker(self, session: ClientSession, audio_chunk: np.ndarray) -> int:
-        if len(audio_chunk) < int(self.sample_rate * 0.4):
+        if self.speaker_model is None or len(audio_chunk) < int(self.sample_rate * 0.6):
             return session.current_speaker
 
         try:
@@ -103,61 +114,75 @@ class StreamingASREngine:
                     session.current_speaker = best_idx
 
                 return session.current_speaker
-
-        except Exception as e:
-            if self.torch_device != torch.device("cpu"):
-                print(f"[Diarizer Warning] GPU error ({e}). Shifting Diarizer to CPU...")
-                self.torch_device = torch.device("cpu")
-                self.speaker_model = self.speaker_model.to(self.torch_device)
-                return self._identify_speaker(session, audio_chunk)
+        except Exception:
             return session.current_speaker
 
     def process_audio_chunk(self, audio_input, session_id: str = "default"):
         session = self.get_or_create_session(session_id)
 
-        # Convert incoming data: handle raw bytes (PCM 16-bit mono from Android) or float32 np.ndarray
+        # 1. Downmix stereo and cast to 16kHz float32 mono
         if isinstance(audio_input, (bytes, bytearray)):
             chunk_raw = np.frombuffer(audio_input, dtype=np.int16).astype(np.float32) / 32768.0
         else:
             chunk_raw = np.asarray(audio_input, dtype=np.float32)
-            # If stereo from Windows loopback (shape: [N, 2]), downmix to mono
             if chunk_raw.ndim == 2:
                 chunk_raw = np.mean(chunk_raw, axis=1)
 
         if len(chunk_raw) == 0:
             return None
 
-        session.buffer = np.append(session.buffer, chunk_raw)
-        if len(session.buffer) < self.chunk_size:
+        session.audio_buffer = np.append(session.audio_buffer, chunk_raw)
+
+        # Wait until minimum audio buffer is accumulated
+        if len(session.audio_buffer) < self.min_chunk_samples:
             return None
 
-        chunk = session.buffer[:self.chunk_size].copy()
-        session.buffer = session.buffer[self.chunk_size:]
-
-        # Skip silence
-        rms = float(np.sqrt(np.mean(chunk ** 2)))
-        if rms < 0.003:
-            return None
-
+        # 2. Transcribe accumulated clause with Silero VAD & repetition suppression
         try:
-            segments, _ = self.asr.transcribe(
-                chunk,
+            segments, info = self.asr.transcribe(
+                session.audio_buffer,
                 language="en",
                 beam_size=1,
                 temperature=0.0,
                 condition_on_previous_text=False,
+                repetition_penalty=1.15,          # Prevents autoregressive looping on background music/noise
+                no_repeat_ngram_size=3,            # Strictly forbids 3x word repetitions
+                compression_ratio_threshold=1.8,   # Discards repetitive hallucination loops
+                no_speech_threshold=0.6,
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=300)
+                vad_parameters=dict(
+                    threshold=0.5,
+                    min_silence_duration_ms=300,
+                    speech_pad_ms=150
+                )
             )
 
             text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
+
+            # If pure silence detected by VAD
             if not text:
+                session.audio_buffer = np.zeros(0, dtype=np.float32)
                 return None
 
-            speaker = self._identify_speaker(session, chunk)
-            print(f"[ASR ({session_id})] -> \"{text}\" (Speaker {speaker})")
-            return {"text": text, "speaker": speaker}
+            # Check if speaker finished a thought (pause/punctuation) or if buffer reached max window
+            has_pause = text.endswith((".", "?", "!", ",", "..."))
+            is_buffer_full = len(session.audio_buffer) >= self.max_buffer_samples
+
+            if has_pause or is_buffer_full:
+                if text.lower() == session.last_emitted_text.lower():
+                    session.audio_buffer = np.zeros(0, dtype=np.float32)
+                    return None
+
+                speaker = self._identify_speaker(session, session.audio_buffer)
+                session.last_emitted_text = text
+                session.audio_buffer = np.zeros(0, dtype=np.float32)
+
+                print(f"[ASR ({session_id})] -> \"{text}\" (Speaker {speaker})")
+                return {"text": text, "speaker": speaker}
+
+            return None
 
         except Exception as e:
-            print(f"[Whisper Error] {e}")
+            print(f"[Engine Error] {e}")
+            session.audio_buffer = np.zeros(0, dtype=np.float32)
             return None

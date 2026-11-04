@@ -43,7 +43,7 @@ echo "[+] Installing PyTorch with CUDA 12 support..."
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124 --quiet
 
 echo "[+] Installing Faster-Whisper, WebSockets, and Audio stack..."
-pip install faster-whisper websockets sounddevice numpy pynvml --quiet
+pip install faster-whisper websockets soundcard numpy pynvml --quiet
 
 # 5. Install CUDA 12 Shared Libraries for CTranslate2
 if [ "$DEVICE_MODE" = "cuda" ]; then
