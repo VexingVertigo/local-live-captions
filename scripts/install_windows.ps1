@@ -1,3 +1,8 @@
+param(
+    [ValidateSet("auto", "lite", "balanced", "stream", "all")]
+    [string]$Tier = "balanced"
+)
+
 Write-Host "=== Local Live Captions: Windows Compatibility & Setup ===" -ForegroundColor Cyan
 
 # 1. Python Architecture & Version Check
@@ -9,20 +14,40 @@ if ($LASTEXITCODE -ne 0) {
 
 $is64Bit = python -c "import struct; print(struct.calcsize('P') * 8)"
 if ($is64Bit -ne "64") {
-    Write-Error "Detected 32-bit Python. A 64-bit Python installation is strictly required for CUDA and CTranslate2."
+    Write-Error "Detected 32-bit Python. A 64-bit Python installation is strictly required."
     exit 1
 }
 Write-Host "[+] Python Version: $pythonVersion (64-bit)" -ForegroundColor Green
 
-# 2. Hardware Detection (GPU vs CPU)
-$gpuName = Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name | Where-Object { $_ -match "NVIDIA" } | Select-Object -First 1
+# 2. Hardware & VRAM Detection
+$gpuInfo = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match "NVIDIA" } | Select-Object -First 1
+$vramGB = 0
 
-if ($gpuName) {
-    Write-Host "[+] Supported NVIDIA GPU Detected: $gpuName" -ForegroundColor Green
+if ($gpuInfo) {
+    $gpuName = $gpuInfo.Name
+    # Query exact VRAM via nvidia-smi if available
+    $smiVram = nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null | Select-Object -First 1
+    if ($smiVram) {
+        $vramGB = [math]::Round(([double]$smiVram / 1024), 1)
+    } else {
+        $vramGB = [math]::Round(([double]$gpuInfo.AdapterRAM / 1GB), 1)
+    }
+    Write-Host "[+] NVIDIA GPU Detected: $gpuName ($vramGB GB VRAM)" -ForegroundColor Green
     $deviceMode = "cuda"
 } else {
-    Write-Host "[!] No NVIDIA GPU detected. Engine will default to CPU (int8) mode." -ForegroundColor Yellow
+    Write-Host "[!] No NVIDIA GPU detected. Defaulting to CPU mode." -ForegroundColor Yellow
     $deviceMode = "cpu"
+}
+
+if ($Tier -eq "auto") {
+    if ($deviceMode -eq "cpu" -or $vramGB -lt 4) {
+        $Tier = "lite"
+    } elseif ($vramGB -lt 10) {
+        $Tier = "balanced"
+    } else {
+        $Tier = "stream"
+    }
+    Write-Host "[+] Auto-selected tier based on hardware: $Tier" -ForegroundColor Cyan
 }
 
 # 3. Virtual Environment Creation
@@ -37,14 +62,14 @@ if (-not (Test-Path ".venv")) {
 $pip = ".\.venv\Scripts\pip.exe"
 $python = ".\.venv\Scripts\python.exe"
 
-# 4. Install Dependencies
+# 4. Install Core & Tier Dependencies
 Write-Host "[*] Upgrading pip and core build tools..."
 & $pip install --upgrade pip setuptools wheel --quiet
 
 Write-Host "[*] Installing PyTorch with CUDA 12 support..."
 & $pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 --quiet
 
-Write-Host "[*] Installing Faster-Whisper, WebSockets, and Audio Capture..."
+Write-Host "[*] Installing base WebSocket, Audio, and Faster-Whisper stack..."
 & $pip install faster-whisper websockets soundcard numpy pystray Pillow --quiet
 
 if ($deviceMode -eq "cuda") {
@@ -52,21 +77,22 @@ if ($deviceMode -eq "cuda") {
     & $pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 --quiet
 }
 
+if ($Tier -eq "lite" -or $Tier -eq "all") {
+    Write-Host "[*] Installing Lite Tier (onnx-asr Parakeet TDT)..." -ForegroundColor Cyan
+    if ($deviceMode -eq "cuda") {
+        & $pip install "onnx-asr[cuda,hub]" --quiet
+    } else {
+        & $pip install "onnx-asr[cpu,hub]" --quiet
+    }
+}
+
+if ($Tier -eq "stream" -or $Tier -eq "all") {
+    Write-Host "[*] Installing Stream Tier (Kyutai STT / Moshi)..." -ForegroundColor Cyan
+    & $pip install moshi huggingface-hub --quiet
+}
+
 # 5. Sanity Check
-Write-Host "[*] Verifying runtime inference..."
-$verifyScript = @"
-import ctranslate2
-import torch
-from faster_whisper import WhisperModel
+Write-Host "[*] Verifying runtime hardware profile..."
+& $python -c "import sys; sys.path.insert(0, 'daemon'); from engine import detect_hardware_profile; print(detect_hardware_profile())"
 
-gpu_available = torch.cuda.is_available()
-c2_devices = ctranslate2.get_cuda_device_count()
-print(f'PyTorch CUDA Accessible: {gpu_available}')
-print(f'CTranslate2 CUDA Devices: {c2_devices}')
-if gpu_available:
-    print(f'Active Device: {torch.cuda.get_device_name(0)}')
-"@
-
-& $python -c $verifyScript
-
-Write-Host "`n[+] Setup complete! Double-click run_daemon.vbs (silent) or run_daemon_debug.vbs (console) to launch." -ForegroundColor Green
+Write-Host "`n[+] Setup complete for tier '$Tier'! Launch with: .\.venv\Scripts\python.exe daemon\server.py --tier $Tier" -ForegroundColor Green

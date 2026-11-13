@@ -4,10 +4,9 @@ import json
 import os
 import sys
 import threading
-import numpy as np
 import websockets
 
-from engine import StreamingASREngine
+from engine import create_asr_engine
 
 # Global tracking
 CONNECTED_CLIENTS = set()
@@ -52,7 +51,6 @@ async def broadcast_loopback_transcript(payload_data):
 
     payload = json.dumps({"type": "transcript", "text": text, "speaker": speaker})
 
-    # Only send to passive clients; active streaming clients get their own isolated transcripts
     passive_clients = [ws for ws in CONNECTED_CLIENTS if ws not in STREAMING_CLIENTS]
     disconnected = set()
     for ws in passive_clients:
@@ -85,7 +83,6 @@ async def client_handler(websocket):
     update_tray_status(True)
     print(f"[Server] Client connected: {client_id} (Total: {len(CONNECTED_CLIENTS)})")
 
-    # Start loopback capture if on desktop and first passive client connects
     if loopback is not None and len(CONNECTED_CLIENTS) == 1:
         print("[Server] Starting audio loopback capture...")
         loopback.start(on_loopback_audio)
@@ -94,7 +91,9 @@ async def client_handler(websocket):
         await websocket.send(json.dumps({
             "type": "status",
             "status": "connected",
-            "message": "AI Engine ready."
+            "tier": getattr(engine, "tier_name", "balanced"),
+            "model": getattr(engine, "model_name", "large-v3-turbo"),
+            "message": f"AI Engine ready ({getattr(engine, 'tier_name', 'balanced')})."
         }))
 
         async for message in websocket:
@@ -157,17 +156,23 @@ async def main():
     parser = argparse.ArgumentParser(description="Local Live Captions Daemon")
     parser.add_argument("--host", default="0.0.0.0", help="Binding IP (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8765, help="Port (default: 8765)")
+    parser.add_argument(
+        "--tier",
+        choices=["auto", "lite", "balanced", "stream"],
+        default="balanced",
+        help="Performance & ASR tier: auto, lite (Parakeet ONNX), balanced (Whisper), stream (Kyutai STT)"
+    )
+    parser.add_argument("--model", default=None, help="Optional HuggingFace/Whisper model ID override")
     parser.add_argument("--no-loopback", action="store_true", help="Disable local soundcard loopback (for Linux server / compute node)")
     parser.add_argument("--no-tray", action="store_true", help="Disable system tray icon (headless mode)")
-    parser.add_argument("--cpu", action="store_true", help="Force CPU int8 execution")
+    parser.add_argument("--cpu", action="store_true", help="Force CPU execution")
     args = parser.parse_args()
 
     loop = asyncio.get_running_loop()
     inference_lock = asyncio.Lock()
 
-    engine = StreamingASREngine(force_cpu=args.cpu)
+    engine = create_asr_engine(tier=args.tier, force_cpu=args.cpu, model_override=args.model)
 
-    # Initialize loopback only if requested and supported
     if not args.no_loopback:
         try:
             from loopback import LoopbackCapture
@@ -180,7 +185,6 @@ async def main():
         loopback = None
         print("[Server] Running in pure network compute mode (loopback disabled).")
 
-    # Start system tray on Windows if not running headless
     if sys.platform == "win32" and not args.no_tray:
         tray_thread = threading.Thread(target=run_tray, daemon=True)
         tray_thread.start()
@@ -195,7 +199,7 @@ async def main():
         max_size=10 * 1024 * 1024
     )
 
-    print(f"[Server] WebSocket listening on ws://{args.host}:{args.port}")
+    print(f"[Server] WebSocket listening on ws://{args.host}:{args.port} [tier={engine.tier_name}]")
     await asyncio.Future()
 
 
