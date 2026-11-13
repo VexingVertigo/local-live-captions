@@ -35,6 +35,18 @@ local-live-captions/
 2. Start the server via `run_daemon.vbs` (local desktop capture) or `.venv/bin/python daemon/server.py --no-loopback` (dedicated remote compute node).
 3. Load `clients/extension/` in your browser and connect to `127.0.0.1:8765` (or your host machine's LAN IP).
 
+### Browser Extension Setup
+
+1. Download and extract the latest release archive (or clone this repository).
+2. Open your browser's extensions page:
+   * **Chrome:** `chrome://extensions`
+   * **Edge:** `edge://extensions`
+   * **Brave:** `brave://extensions`
+3. Enable **Developer mode** using the toggle in the top-right corner.
+4. Click **Load unpacked** and select the `clients/extension` folder from this repository.
+5. Click the extension icon in your toolbar to verify the connection to `127.0.0.1:8765` (or enter your host machine's LAN IP) and customize caption appearance.
+
+> **Tip:** Press `Alt + C` on any webpage to quickly toggle the live caption overlay on or off.
 ---
 
 ### Edge Cases & Notes
